@@ -1,7 +1,7 @@
 {
   "name": "dyad",
   "productName": "dyad",
-  "version": "0.29.0-beta.1",
+  "version": "0.30.0-beta.1",
   "description": "Free, local, open-source AI app builder",
   "main": ".vite/build/main.js",
   "repository": {
@@ -159,7 +159,7 @@
     "react-dom": "^19.2.1",
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^2.1.7",
-    "react-shiki": "^0.5.2",
+    "react-shiki": "^0.9.0",
     "recast": "^0.23.11",
     "remark-gfm": "^4.0.1",
     "shell-env": "^4.0.1",
