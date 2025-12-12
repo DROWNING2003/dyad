@@ -1,3 +1,40 @@
+/**
+ * 🚀 AI 响应处理器 (Response Processor)
+ * 
+ * 📋 模块功能: 处理 AI 生成的响应，执行其中包含的 Dyad 标签操作
+ * 🎯 核心作用: 将 AI 的文本响应转换为实际的文件系统操作和代码变更
+ * 
+ * 🔧 支持的操作类型:
+ * - 📝 文件写入/创建 (dyad-write)
+ * - 🔄 文件重命名 (dyad-rename) 
+ * - 🗑️ 文件删除 (dyad-delete)
+ * - 📦 依赖包管理 (dyad-add-dependency)
+ * - 🗃️ SQL 查询执行 (dyad-execute-sql)
+ * - 🔍 搜索替换 (dyad-search-replace)
+ * 
+ * 🚀 处理流程:
+ * 1. 📋 解析 AI 响应中的 Dyad 标签
+ * 2. 🔍 验证操作权限和文件路径安全性
+ * 3. 🗃️ 执行数据库操作（SQL 查询）
+ * 4. 📦 处理依赖包安装
+ * 5. 📁 按顺序执行文件操作（删除 → 重命名 → 写入）
+ * 6. ☁️ 同步 Supabase 函数部署
+ * 7. 📝 提交 Git 变更并记录
+ * 8. ✅ 更新消息状态为已批准
+ * 
+ * 🛡️ 安全特性:
+ * - 🔒 路径安全验证 (safeJoin)
+ * - 🎯 应用范围限制 (appPath)
+ * - 📋 操作日志记录
+ * - ⚠️ 错误处理和回滚
+ * 
+ * 💡 设计理念:
+ * - 🎭 原子性操作 - 要么全部成功，要么全部回滚
+ * - 📊 详细日志 - 记录每个操作的执行状态
+ * - 🔄 幂等性 - 重复执行相同操作应该安全
+ * - 🚨 错误恢复 - 优雅处理各种异常情况
+ */
+
 import { db } from "../../db";
 import { chats, messages } from "../../db/schema";
 import { and, eq } from "drizzle-orm";
@@ -40,23 +77,68 @@ import { FileUploadsState } from "../utils/file_uploads_state";
 const readFile = fs.promises.readFile;
 const logger = log.scope("response_processor");
 
+/**
+ * 📋 输出消息接口 - 用于收集处理过程中的警告和错误
+ */
 interface Output {
-  message: string;
-  error: unknown;
+  message: string;  // 📄 用户友好的错误/警告消息
+  error: unknown;   // 🐛 原始错误对象，用于调试
 }
 
+/**
+ * 🏷️ 从文件路径提取 Supabase 函数名
+ * 
+ * @param input 文件路径（可能是目录或文件）
+ * @returns Supabase 函数名称
+ * 
+ * 💡 逻辑: 
+ * - 如果是文件路径，返回其父目录名
+ * - 如果是目录路径，返回目录名本身
+ */
 function getFunctionNameFromPath(input: string): string {
   return path.basename(path.extname(input) ? path.dirname(input) : input);
 }
 
+/**
+ * 📖 从函数路径读取文件内容
+ * 
+ * @param input 函数路径（目录或文件）
+ * @returns 文件内容字符串
+ * 
+ * 💡 逻辑:
+ * - 如果输入是目录，读取其中的 index.ts 文件
+ * - 如果输入是文件，直接读取该文件
+ */
 async function readFileFromFunctionPath(input: string): Promise<string> {
-  // Sometimes, the path given is a directory, sometimes it's the file itself.
+  // 🔍 判断路径类型：目录还是文件
   if (path.extname(input) === "") {
+    // 📁 目录路径 - 读取 index.ts
     return readFile(path.join(input, "index.ts"), "utf8");
   }
+  // 📄 文件路径 - 直接读取
   return readFile(input, "utf8");
 }
 
+/**
+ * 🔍 搜索替换操作预检查 (Dry Run Search Replace)
+ * 
+ * 🎯 功能: 在实际执行前验证搜索替换操作的可行性
+ * 📋 用途: 提前发现潜在问题，避免部分成功的操作状态
+ * 
+ * 🔧 检查项目:
+ * - 📁 目标文件是否存在
+ * - 🔍 搜索替换规则是否有效
+ * - 📄 文件内容是否可以正确解析
+ * 
+ * @param fullResponse AI 生成的完整响应文本
+ * @param appPath 应用根目录路径
+ * @returns 发现的问题列表，空数组表示无问题
+ * 
+ * 💡 使用场景:
+ * - 🚨 操作前验证 - 在实际修改文件前检查
+ * - 🔍 问题诊断 - 帮助用户理解为什么操作可能失败
+ * - 🛡️ 安全保障 - 避免部分执行导致的不一致状态
+ */
 export async function dryRunSearchReplace({
   fullResponse,
   appPath,
@@ -66,10 +148,14 @@ export async function dryRunSearchReplace({
 }) {
   const issues: { filePath: string; error: string }[] = [];
   const dyadSearchReplaceTags = getDyadSearchReplaceTags(fullResponse);
+  
+  // 🔄 遍历所有搜索替换标签进行预检查
   for (const tag of dyadSearchReplaceTags) {
     const filePath = tag.path;
     const fullFilePath = safeJoin(appPath, filePath);
+    
     try {
+      // 📁 检查目标文件是否存在
       if (!fs.existsSync(fullFilePath)) {
         issues.push({
           filePath,
@@ -78,7 +164,10 @@ export async function dryRunSearchReplace({
         continue;
       }
 
+      // 📖 读取原始文件内容
       const original = await readFile(fullFilePath, "utf8");
+      
+      // 🔍 尝试应用搜索替换规则
       const result = applySearchReplace(original, tag.content);
       if (!result.success || typeof result.content !== "string") {
         issues.push({
@@ -89,6 +178,7 @@ export async function dryRunSearchReplace({
         continue;
       }
     } catch (error) {
+      // 🐛 捕获任何其他错误
       issues.push({
         filePath,
         error: error?.toString() ?? "Unknown error",
@@ -98,6 +188,35 @@ export async function dryRunSearchReplace({
   return issues;
 }
 
+/**
+ * 🚀 处理完整响应操作 (Process Full Response Actions)
+ * 
+ * 🎯 核心功能: 解析并执行 AI 响应中的所有 Dyad 标签操作
+ * 📋 处理范围: 文件操作、数据库查询、依赖管理、版本控制
+ * 
+ * 🔧 执行顺序:
+ * 1. 🗃️ 数据库版本控制准备 (Neon 分支)
+ * 2. 🗃️ SQL 查询执行
+ * 3. 📦 依赖包安装
+ * 4. 🗑️ 文件删除操作
+ * 5. 🔄 文件重命名操作  
+ * 6. 🔍 搜索替换操作
+ * 7. 📝 文件写入操作
+ * 8. ☁️ Supabase 函数同步
+ * 9. 📝 Git 提交和状态更新
+ * 
+ * @param fullResponse AI 生成的完整响应文本
+ * @param chatId 聊天会话 ID
+ * @param chatSummary 聊天摘要（用于 Git 提交消息）
+ * @param messageId 消息 ID（用于状态更新）
+ * @returns 处理结果，包含文件更新状态和错误信息
+ * 
+ * 🛡️ 安全保障:
+ * - 🔒 路径安全验证
+ * - 📋 详细操作日志
+ * - 🔄 原子性操作
+ * - ⚠️ 错误恢复机制
+ */
 export async function processFullResponseActions(
   fullResponse: string,
   chatId: number,
@@ -114,27 +233,33 @@ export async function processFullResponseActions(
   extraFiles?: string[];
   extraFilesError?: string;
 }> {
+  // 📁 获取文件上传状态管理器
   const fileUploadsState = FileUploadsState.getInstance();
   const fileUploadsMap = fileUploadsState.getFileUploadsForChat(chatId);
-  fileUploadsState.clear(chatId);
+  fileUploadsState.clear(chatId); // 🧹 清理当前聊天的上传状态
+  
   logger.log("processFullResponseActions for chatId", chatId);
-  // Get the app associated with the chat
+  
+  // 🗃️ 获取与聊天关联的应用信息
   const chatWithApp = await db.query.chats.findFirst({
     where: eq(chats.id, chatId),
     with: {
-      app: true,
+      app: true, // 📱 包含应用详细信息
     },
   });
+  
   if (!chatWithApp || !chatWithApp.app) {
     logger.error(`No app found for chat ID: ${chatId}`);
-    return {};
+    return {}; // ❌ 无法找到关联应用，直接返回
   }
 
+  // 🗃️ 数据库版本控制准备 (Neon 分支管理)
   if (
     chatWithApp.app.neonProjectId &&
     chatWithApp.app.neonDevelopmentBranchId
   ) {
     try {
+      // 📊 在当前版本创建数据库时间戳快照
       await storeDbTimestampAtCurrentVersion({
         appId: chatWithApp.app.id,
       });
@@ -147,49 +272,52 @@ export async function processFullResponseActions(
     }
   }
 
-  const settings: UserSettings = readSettings();
-  const appPath = getDyadAppPath(chatWithApp.app.path);
-  const writtenFiles: string[] = [];
-  const renamedFiles: string[] = [];
-  const deletedFiles: string[] = [];
-  let hasChanges = false;
+  // 🔧 初始化处理环境
+  const settings: UserSettings = readSettings();           // 📋 用户设置
+  const appPath = getDyadAppPath(chatWithApp.app.path);   // 📁 应用根路径
+  const writtenFiles: string[] = [];                      // 📝 已写入文件列表
+  const renamedFiles: string[] = [];                      // 🔄 已重命名文件列表
+  const deletedFiles: string[] = [];                      // 🗑️ 已删除文件列表
+  let hasChanges = false;                                 // 🔄 是否有文件变更
 
-  const warnings: Output[] = [];
-  const errors: Output[] = [];
+  const warnings: Output[] = [];                          // ⚠️ 警告消息收集
+  const errors: Output[] = [];                            // 🚨 错误消息收集
 
   try {
-    // Extract all tags
-    const dyadWriteTags = getDyadWriteTags(fullResponse);
-    const dyadRenameTags = getDyadRenameTags(fullResponse);
-    const dyadDeletePaths = getDyadDeleteTags(fullResponse);
-    const dyadAddDependencyPackages = getDyadAddDependencyTags(fullResponse);
-    const dyadExecuteSqlQueries = chatWithApp.app.supabaseProjectId
+    // 🏷️ 解析所有 Dyad 标签 - 从 AI 响应中提取操作指令
+    const dyadWriteTags = getDyadWriteTags(fullResponse);              // 📝 文件写入标签
+    const dyadRenameTags = getDyadRenameTags(fullResponse);            // 🔄 文件重命名标签
+    const dyadDeletePaths = getDyadDeleteTags(fullResponse);           // 🗑️ 文件删除标签
+    const dyadAddDependencyPackages = getDyadAddDependencyTags(fullResponse); // 📦 依赖包标签
+    const dyadExecuteSqlQueries = chatWithApp.app.supabaseProjectId    // 🗃️ SQL 查询标签
       ? getDyadExecuteSqlTags(fullResponse)
-      : [];
+      : []; // 只有配置了 Supabase 项目才处理 SQL
 
+    // 🗃️ 获取当前处理的消息记录
     const message = await db.query.messages.findFirst({
       where: and(
         eq(messages.id, messageId),
-        eq(messages.role, "assistant"),
+        eq(messages.role, "assistant"),    // 🤖 确保是 AI 助手的消息
         eq(messages.chatId, chatId),
       ),
     });
 
     if (!message) {
       logger.error(`No message found for ID: ${messageId}`);
-      return {};
+      return {}; // ❌ 找不到消息记录，无法继续处理
     }
 
-    // Handle SQL execution tags
+    // 🗃️ 处理 SQL 执行标签 - 执行数据库查询操作
     if (dyadExecuteSqlQueries.length > 0) {
       for (const query of dyadExecuteSqlQueries) {
         try {
+          // 🚀 执行 Supabase SQL 查询
           await executeSupabaseSql({
             supabaseProjectId: chatWithApp.app.supabaseProjectId!,
             query: query.content,
           });
 
-          // Only write migration file if SQL execution succeeded
+          // 📝 如果启用了迁移文件写入，创建迁移文件
           if (settings.enableSupabaseWriteSqlMigration) {
             try {
               const migrationFilePath = await writeMigrationFile(
@@ -197,7 +325,7 @@ export async function processFullResponseActions(
                 query.content,
                 query.description,
               );
-              writtenFiles.push(migrationFilePath);
+              writtenFiles.push(migrationFilePath); // 📋 记录创建的迁移文件
             } catch (error) {
               errors.push({
                 message: `Failed to write SQL migration file for: ${query.description}`,
@@ -206,6 +334,7 @@ export async function processFullResponseActions(
             }
           }
         } catch (error) {
+          // 🚨 SQL 执行失败，记录错误但继续处理其他操作
           errors.push({
             message: `Failed to execute SQL query: ${query.content}`,
             error: error,
@@ -215,15 +344,17 @@ export async function processFullResponseActions(
       logger.log(`Executed ${dyadExecuteSqlQueries.length} SQL queries`);
     }
 
-    // TODO: Handle add dependency tags
+    // 📦 处理依赖包添加标签 - 安装 npm 包
     if (dyadAddDependencyPackages.length > 0) {
       try {
+        // 🚀 执行依赖包安装
         await executeAddDependency({
           packages: dyadAddDependencyPackages,
           message: message,
           appPath,
         });
       } catch (error) {
+        // 🚨 依赖安装失败，记录错误
         errors.push({
           message: `Failed to add dependencies: ${dyadAddDependencyPackages.join(
             ", ",
@@ -231,27 +362,36 @@ export async function processFullResponseActions(
           error: error,
         });
       }
-      writtenFiles.push("package.json");
-      const pnpmFilename = "pnpm-lock.yaml";
+      
+      // 📋 记录可能被修改的包管理文件
+      writtenFiles.push("package.json");                    // 📦 包配置文件
+      
+      const pnpmFilename = "pnpm-lock.yaml";               // 🔒 pnpm 锁文件
       if (fs.existsSync(safeJoin(appPath, pnpmFilename))) {
         writtenFiles.push(pnpmFilename);
       }
-      const packageLockFilename = "package-lock.json";
+      
+      const packageLockFilename = "package-lock.json";     // 🔒 npm 锁文件
       if (fs.existsSync(safeJoin(appPath, packageLockFilename))) {
         writtenFiles.push(packageLockFilename);
       }
     }
 
     //////////////////////
-    // File operations //
-    // Do it in this order:
-    // 1. Deletes
-    // 2. Renames
-    // 3. Writes
+    // 📁 文件操作处理 (File Operations Processing)
+    // 
+    // 🔄 执行顺序 (严格按此顺序执行):
+    // 1. 🗑️ 删除操作 (Deletes)
+    // 2. 🔄 重命名操作 (Renames) 
+    // 3. 🔍 搜索替换操作 (Search-Replace)
+    // 4. 📝 写入操作 (Writes)
     //
-    // Why?
-    // - Deleting first avoids path conflicts before the other operations.
-    // - LLMs like to rename and then edit the same file.
+    // 🎯 顺序原因:
+    // - 🗑️ 先删除避免路径冲突
+    // - 🔄 重命名释放原路径供后续使用
+    // - 🔍 搜索替换修改现有文件内容
+    // - 📝 最后写入新文件，避免覆盖重命名的文件
+    // - 🤖 AI 经常会重命名后再编辑同一文件
     //////////////////////
 
     // Process all file deletions

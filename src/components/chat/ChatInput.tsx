@@ -1,3 +1,8 @@
+// ⌨️ 聊天输入组件 / Chat Input Component
+// 📝 这是聊天界面的核心输入组件，处理用户消息输入、文件附件、AI响应流等功能
+// 📝 This is the core input component for chat interface, handling user message input, file attachments, AI response streaming, etc.
+
+// 🎨 图标组件 / Icon components
 import {
   StopCircleIcon,
   X,
@@ -18,6 +23,7 @@ import {
   SendHorizontalIcon,
   Lock,
 } from "lucide-react";
+// React 核心类型和钩子 / React core types and hooks
 import type React from "react";
 import { useCallback, useEffect, useState } from "react";
 

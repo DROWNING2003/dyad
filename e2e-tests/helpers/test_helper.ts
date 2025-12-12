@@ -1,3 +1,32 @@
+/**
+ * 🧪 E2E 测试助手 (End-to-End Test Helper)
+ * 
+ * 📋 模块功能: 为 Dyad Electron 应用提供完整的 E2E 测试基础设施
+ * 🎯 核心作用: 封装 Playwright + Electron 测试的复杂性，提供简洁的测试 API
+ * 
+ * 🔧 主要组件:
+ * - 🎭 PageObject 模式 - 封装页面操作和断言
+ * - ⚡ Electron 应用管理 - 启动、配置、清理
+ * - 📊 快照测试 - 文件、消息、UI 状态快照
+ * - 🔗 GitHub 集成测试 - 模拟 Git 操作和同步
+ * - 🎨 UI 组件交互 - 对话框、表单、预览面板
+ * 
+ * 🚀 测试能力:
+ * - 📱 完整应用生命周期测试
+ * - 🤖 AI 聊天和响应处理
+ * - 📁 文件系统操作验证
+ * - 🔍 代码预览和问题检测
+ * - 🔐 安全扫描和配置
+ * - 📦 依赖管理和构建流程
+ * 
+ * 💡 设计理念:
+ * - 🎯 页面对象模式 - 提高测试可维护性
+ * - 🔄 自动化清理 - 确保测试隔离
+ * - 📊 丰富断言 - 支持多种验证方式
+ * - 🛡️ 错误处理 - 优雅处理测试失败
+ * - 🎥 调试支持 - 截图、日志、视频录制
+ */
+
 import { test as base, Page, expect } from "@playwright/test";
 import * as eph from "electron-playwright-helpers";
 import { ElectronApplication, _electron as electron } from "playwright";
@@ -11,26 +40,46 @@ import {
   BUILD_SYSTEM_PREFIX,
 } from "@/prompts/system_prompt";
 
+// 🐛 调试日志控制 - 通过环境变量启用详细日志
 const showDebugLogs = process.env.DEBUG_LOGS === "true";
 
+/**
+ * ⏱️ 测试超时配置 (Test Timeout Configuration)
+ * 
+ * 🎯 功能: 根据运行环境调整测试超时时间
+ * 💡 设计: CI 环境通常较慢，需要更长的超时时间
+ */
 export const Timeout = {
-  // Things generally take longer on CI, so we make them longer.
-  EXTRA_LONG: process.env.CI ? 120_000 : 60_000,
-  LONG: process.env.CI ? 60_000 : 30_000,
-  MEDIUM: process.env.CI ? 30_000 : 15_000,
+  // 🐌 CI 环境下操作通常更慢，因此设置更长的超时时间
+  EXTRA_LONG: process.env.CI ? 120_000 : 60_000,  // 🕐 超长等待: CI 2分钟 / 本地 1分钟
+  LONG: process.env.CI ? 60_000 : 30_000,         // 🕐 长等待: CI 1分钟 / 本地 30秒
+  MEDIUM: process.env.CI ? 30_000 : 15_000,       // 🕐 中等待: CI 30秒 / 本地 15秒
 };
 
+/**
+ * 📁 上下文文件选择器对话框 (Context Files Picker Dialog)
+ * 
+ * 🎯 功能: 管理 AI 聊天中的上下文文件选择
+ * 📋 用途: 添加、移除手动和自动包含的文件
+ * 
+ * 🔧 支持的操作:
+ * - 📝 手动上下文文件管理
+ * - 🤖 自动包含文件管理  
+ * - 🚫 排除文件管理
+ */
 export class ContextFilesPickerDialog {
   constructor(
-    public page: Page,
-    public close: () => Promise<void>,
+    public page: Page,                    // 📄 Playwright 页面实例
+    public close: () => Promise<void>,    // 🚪 关闭对话框的函数
   ) {}
 
+  // 📝 添加手动上下文文件
   async addManualContextFile(path: string) {
     await this.page.getByTestId("manual-context-files-input").fill(path);
     await this.page.getByTestId("manual-context-files-add-button").click();
   }
 
+  // 🤖 添加自动包含的上下文文件
   async addAutoIncludeContextFile(path: string) {
     await this.page.getByTestId("auto-include-context-files-input").fill(path);
     await this.page
@@ -38,6 +87,7 @@ export class ContextFilesPickerDialog {
       .click();
   }
 
+  // 🗑️ 移除手动上下文文件
   async removeManualContextFile() {
     await this.page
       .getByTestId("manual-context-files-remove-button")
@@ -45,6 +95,7 @@ export class ContextFilesPickerDialog {
       .click();
   }
 
+  // 🗑️ 移除自动包含的上下文文件
   async removeAutoIncludeContextFile() {
     await this.page
       .getByTestId("auto-include-context-files-remove-button")
@@ -52,11 +103,13 @@ export class ContextFilesPickerDialog {
       .click();
   }
 
+  // 🚫 添加排除的上下文文件
   async addExcludeContextFile(path: string) {
     await this.page.getByTestId("exclude-context-files-input").fill(path);
     await this.page.getByTestId("exclude-context-files-add-button").click();
   }
 
+  // 🗑️ 移除排除的上下文文件
   async removeExcludeContextFile() {
     await this.page
       .getByTestId("exclude-context-files-remove-button")
@@ -65,12 +118,23 @@ export class ContextFilesPickerDialog {
   }
 }
 
+/**
+ * 🚀 Pro 模式对话框 (Pro Modes Dialog)
+ * 
+ * 🎯 功能: 管理 Dyad Pro 功能的高级设置
+ * 📋 用途: 配置智能上下文和快速编辑模式
+ * 
+ * 🔧 支持的模式:
+ * - 🧠 智能上下文: balanced | off | deep
+ * - ⚡ 快速编辑: off | classic | search-replace
+ */
 class ProModesDialog {
   constructor(
-    public page: Page,
-    public close: () => Promise<void>,
+    public page: Page,                    // 📄 Playwright 页面实例
+    public close: () => Promise<void>,    // 🚪 关闭对话框的函数
   ) {}
 
+  // 🧠 设置智能上下文模式
   async setSmartContextMode(mode: "balanced" | "off" | "deep") {
     await this.page
       .getByTestId("smart-context-selector")
@@ -80,6 +144,7 @@ class ProModesDialog {
       .click();
   }
 
+  // ⚡ 设置快速编辑模式
   async setTurboEditsMode(mode: "off" | "classic" | "search-replace") {
     await this.page
       .getByTestId("turbo-edits-selector")
